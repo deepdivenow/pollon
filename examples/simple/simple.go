@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sorintlab/pollon"
+	"github.com/deepdivenow/pollon"
 )
 
 var log = stdlog.New(os.Stderr, "", stdlog.LstdFlags)
