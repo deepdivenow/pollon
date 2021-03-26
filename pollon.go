@@ -17,47 +17,66 @@ package pollon
 import (
 	"fmt"
 	"io"
+	"log"
+	"math/rand"
 	"net"
 	"sync"
 	"time"
 )
 
 type ConfData struct {
-	DestAddr *net.TCPAddr
+	DestAddr []*net.TCPAddr
+}
+
+type Backend struct {
+	destAddr     *net.TCPAddr
+	closeConns   chan struct{}
+	backendMutex sync.Mutex
+	needClean    bool
 }
 
 type Proxy struct {
-	C          chan ConfData
-	listener   *net.TCPListener
-	confMutex  sync.Mutex
-	destAddr   *net.TCPAddr
-	closeConns chan struct{}
-	stop       chan struct{}
-	endCh      chan error
-	connMutex  sync.Mutex
-
+	C                 chan ConfData
+	listener          *net.TCPListener
+	confMutex         sync.Mutex
+	connMutex         sync.Mutex
+	stop              chan struct{}
+	endCh             chan error
 	keepAlive         bool
 	keepAliveIdle     time.Duration
 	keepAliveCount    int
 	keepAliveInterval time.Duration
+	backends          []*Backend
 }
 
 func NewProxy(listener *net.TCPListener) (*Proxy, error) {
 	return &Proxy{
-		C:          make(chan ConfData),
-		listener:   listener,
-		closeConns: make(chan struct{}),
-		stop:       make(chan struct{}),
-		endCh:      make(chan error),
-		connMutex:  sync.Mutex{},
+		C:        make(chan ConfData),
+		listener: listener,
+		endCh:    make(chan error),
 	}, nil
+}
+
+func NewBackend(destAddr *net.TCPAddr) *Backend {
+	return &Backend{
+		destAddr:     destAddr,
+		closeConns:   make(chan struct{}),
+		backendMutex: sync.Mutex{},
+	}
 }
 
 func (p *Proxy) proxyConn(conn *net.TCPConn) {
 	p.connMutex.Lock()
-	closeConns := p.closeConns
-	destAddr := p.destAddr
+	if len(p.backends) < 1 {
+		log.Printf("ERR no backends, closing source connection: %v", conn)
+		return
+	}
+	back := p.backends[rand.Intn(len(p.backends))]
 	p.connMutex.Unlock()
+	back.backendMutex.Lock()
+	closeConns := back.closeConns
+	destAddr := back.destAddr
+	back.backendMutex.Unlock()
 	defer func() {
 		log.Printf("closing source connection: %v", conn)
 		conn.Close()
@@ -125,13 +144,26 @@ func (p *Proxy) confCheck() {
 		case <-p.stop:
 			return
 		case confData := <-p.C:
-			if confData.DestAddr.String() != p.destAddr.String() {
-				p.connMutex.Lock()
-				close(p.closeConns)
-				p.closeConns = make(chan struct{})
-				p.destAddr = confData.DestAddr
-				p.connMutex.Unlock()
+			var dAddrStr []string
+			p.connMutex.Lock()
+			for _, dAddr := range confData.DestAddr {
+				// if New backend exists
+				if !Contains(p.GetBackendsString(), dAddr.String()) {
+					p.connMutex.Lock()
+					p.backends = append(p.backends, NewBackend(dAddr))
+					p.connMutex.Unlock()
+				}
+				dAddrStr = append(dAddrStr, dAddr.String())
 			}
+
+			for _, back := range p.backends {
+				if !Contains(dAddrStr, back.destAddr.String()) {
+					close(back.closeConns)
+					back.needClean = true
+				}
+			}
+			p.BackendCleaning()
+			p.connMutex.Unlock()
 		}
 	}
 }
@@ -166,6 +198,30 @@ func (p *Proxy) Start() error {
 		return fmt.Errorf("proxy error: %v", err)
 	}
 	return nil
+}
+
+func (p *Proxy) GetBackendsString() []string {
+	var result []string
+	for _, b := range p.backends {
+		result = append(result, b.destAddr.String())
+	}
+	return result
+}
+
+func (p *Proxy) BackendCleaning() {
+	last := len(p.backends) - 1
+	if last < 0 {
+		return
+	}
+	for i := last; i < 0; i-- {
+		if p.backends[i].needClean {
+			if i != last {
+				p.backends[i], p.backends[last] = p.backends[last], p.backends[i]
+			}
+			last--
+		}
+	}
+	p.backends = p.backends[:last+1]
 }
 
 func (p *Proxy) SetKeepAlive(keepalive bool) {
