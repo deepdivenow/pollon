@@ -148,9 +148,7 @@ func (p *Proxy) confCheck() {
 			for _, dAddr := range confData.DestAddr {
 				// if New backend exists
 				if !Contains(p.GetBackendsString(), dAddr.String()) {
-					p.connMutex.Lock()
 					p.backends = append(p.backends, NewBackend(dAddr))
-					p.connMutex.Unlock()
 				}
 				dAddrStr = append(dAddrStr, dAddr.String())
 			}
