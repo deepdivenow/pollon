@@ -144,7 +144,7 @@ func (p *Proxy) confCheck() {
 			return
 		case confData := <-p.C:
 			var dAddrStr []string
-			p.connMutex.Lock()
+			p.confMutex.Lock()
 			for _, dAddr := range confData.DestAddr {
 				// if New backend exists
 				if !Contains(p.GetBackendsString(), dAddr.String()) {
@@ -160,7 +160,7 @@ func (p *Proxy) confCheck() {
 				}
 			}
 			p.BackendCleaning()
-			p.connMutex.Unlock()
+			p.confMutex.Unlock()
 		}
 	}
 }
