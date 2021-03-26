@@ -17,7 +17,6 @@ package pollon
 import (
 	"fmt"
 	"io"
-	"log"
 	"math/rand"
 	"net"
 	"sync"
