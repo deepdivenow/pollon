@@ -1,4 +1,4 @@
-module github.com/sorintlab/pollon
+module github.com/deepdivenow/pollon
 
 go 1.15
 
