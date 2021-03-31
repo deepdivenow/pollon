@@ -28,10 +28,9 @@ type ConfData struct {
 }
 
 type Backend struct {
-	destAddr     *net.TCPAddr
-	closeConns   chan struct{}
-	backendMutex sync.Mutex
-	needClean    bool
+	destAddr   *net.TCPAddr
+	closeConns chan struct{}
+	needClean  bool
 }
 
 type Proxy struct {
@@ -56,26 +55,27 @@ func NewProxy(listener *net.TCPListener) (*Proxy, error) {
 	}, nil
 }
 
-func NewBackend(destAddr *net.TCPAddr) *Backend {
+func newBackend(destAddr *net.TCPAddr) *Backend {
 	return &Backend{
-		destAddr:     destAddr,
-		closeConns:   make(chan struct{}),
-		backendMutex: sync.Mutex{},
+		destAddr:   destAddr,
+		closeConns: make(chan struct{}),
 	}
 }
 
+// proxy client connection
 func (p *Proxy) proxyConn(conn *net.TCPConn) {
 	p.connMutex.Lock()
 	if len(p.backends) < 1 {
 		log.Printf("ERR no backends, closing source connection: %v", conn)
 		return
 	}
+	// Select backend in random maner
 	back := p.backends[rand.Intn(len(p.backends))]
 	p.connMutex.Unlock()
-	back.backendMutex.Lock()
+	p.confMutex.Lock()
 	closeConns := back.closeConns
 	destAddr := back.destAddr
-	back.backendMutex.Unlock()
+	p.confMutex.Unlock()
 	defer func() {
 		log.Printf("closing source connection: %v", conn)
 		conn.Close()
@@ -137,22 +137,32 @@ func (p *Proxy) proxyConn(conn *net.TCPConn) {
 	}
 }
 
+//reconfig backends
 func (p *Proxy) confCheck() {
 	for {
 		select {
 		case <-p.stop:
+			p.confMutex.Lock()
+			// Is last iteration before func() exit, use defer
+			defer p.confMutex.Unlock()
+			for _, back := range p.backends {
+				close(back.closeConns)
+				back.needClean = true
+			}
+			p.backends = nil
 			return
 		case confData := <-p.C:
 			var dAddrStr []string
 			p.confMutex.Lock()
+			// Add new backends
 			for _, dAddr := range confData.DestAddr {
 				// if New backend exists
 				if !Contains(p.GetBackendsString(), dAddr.String()) {
-					p.backends = append(p.backends, NewBackend(dAddr))
+					p.backends = append(p.backends, newBackend(dAddr))
 				}
 				dAddrStr = append(dAddrStr, dAddr.String())
 			}
-
+			// Delete stale backends & force close connections
 			for _, back := range p.backends {
 				if !Contains(dAddrStr, back.destAddr.String()) {
 					close(back.closeConns)
@@ -218,7 +228,11 @@ func (p *Proxy) BackendCleaning() {
 			last--
 		}
 	}
-	p.backends = p.backends[:last+1]
+	if last < 0 {
+		p.backends = nil
+	} else {
+		p.backends = p.backends[:last+1]
+	}
 }
 
 func (p *Proxy) SetKeepAlive(keepalive bool) {
