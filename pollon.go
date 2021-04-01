@@ -51,6 +51,7 @@ func NewProxy(listener *net.TCPListener) (*Proxy, error) {
 	return &Proxy{
 		C:        make(chan ConfData),
 		listener: listener,
+		stop:     make(chan struct{}),
 		endCh:    make(chan error),
 	}, nil
 }
@@ -146,10 +147,9 @@ func (p *Proxy) confCheck() {
 			// Is last iteration before func() exit, use defer
 			defer p.confMutex.Unlock()
 			for _, back := range p.backends {
-				close(back.closeConns)
 				back.needClean = true
 			}
-			p.backends = nil
+			p.BackendCleaning()
 			return
 		case confData := <-p.C:
 			var dAddrStr []string
@@ -165,7 +165,6 @@ func (p *Proxy) confCheck() {
 			// Delete stale backends & force close connections
 			for _, back := range p.backends {
 				if !Contains(dAddrStr, back.destAddr.String()) {
-					close(back.closeConns)
 					back.needClean = true
 				}
 			}
@@ -220,8 +219,9 @@ func (p *Proxy) BackendCleaning() {
 	if last < 0 {
 		return
 	}
-	for i := last; i < 0; i-- {
+	for i := last; i >= 0; i-- {
 		if p.backends[i].needClean {
+			close(p.backends[i].closeConns)
 			if i != last {
 				p.backends[i], p.backends[last] = p.backends[last], p.backends[i]
 			}
