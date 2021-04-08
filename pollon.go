@@ -20,7 +20,15 @@ import (
 	"math/rand"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
+)
+
+type LBType string
+
+const (
+	Random     LBType = "random"
+	LeastQueue LBType = "leastqueue"
 )
 
 type ConfData struct {
@@ -31,6 +39,7 @@ type Backend struct {
 	destAddr   *net.TCPAddr
 	closeConns chan struct{}
 	needClean  bool
+	connNum    int32
 }
 
 type Proxy struct {
@@ -45,6 +54,7 @@ type Proxy struct {
 	keepAliveCount    int
 	keepAliveInterval time.Duration
 	backends          []*Backend
+	lbType            LBType
 }
 
 func NewProxy(listener *net.TCPListener) (*Proxy, error) {
@@ -53,6 +63,7 @@ func NewProxy(listener *net.TCPListener) (*Proxy, error) {
 		listener: listener,
 		stop:     make(chan struct{}),
 		endCh:    make(chan error),
+		lbType:   Random,
 	}, nil
 }
 
@@ -61,6 +72,39 @@ func newBackend(destAddr *net.TCPAddr) *Backend {
 		destAddr:   destAddr,
 		closeConns: make(chan struct{}),
 	}
+}
+
+func (p *Proxy) GetBackend() *Backend {
+	if p.lbType == LeastQueue {
+		var backResult *Backend = nil
+		var connNum int32
+		for _,b := range p.backends {
+			if backResult == nil {
+				backResult = b
+				connNum = atomic.LoadInt32(&b.connNum)
+				continue
+			}
+			currConnNum :=  atomic.LoadInt32(&b.connNum)
+			if connNum > currConnNum {
+				backResult = b
+				connNum = currConnNum
+			}
+		}
+		return backResult
+	}
+	if len(p.backends) > 0 {
+		return p.backends[rand.Intn(len(p.backends))]
+	}
+	return nil
+}
+
+func (b *Backend) incConn() {
+	atomic.AddInt32(&b.connNum,1)
+	println(b.connNum)
+}
+func (b *Backend) decConn() {
+	atomic.AddInt32(&b.connNum,-1)
+	println(b.connNum)
 }
 
 // proxy client connection
@@ -77,6 +121,8 @@ func (p *Proxy) proxyConn(conn *net.TCPConn) {
 	closeConns := back.closeConns
 	destAddr := back.destAddr
 	p.confMutex.Unlock()
+	back.incConn()
+	defer back.decConn()
 	defer func() {
 		log.Printf("closing source connection: %v", conn)
 		conn.Close()
@@ -249,4 +295,8 @@ func (p *Proxy) SetKeepAliveCount(n int) {
 
 func (p *Proxy) SetKeepAliveInterval(d time.Duration) {
 	p.keepAliveInterval = d
+}
+
+func (p *Proxy) SetLBType(lbt LBType) {
+	p.lbType = lbt
 }
