@@ -100,43 +100,42 @@ func (p *Proxy) GetBackend() *Backend {
 
 func (b *Backend) incConn() {
 	atomic.AddInt32(&b.connNum,1)
-	println(b.connNum)
 }
 func (b *Backend) decConn() {
 	atomic.AddInt32(&b.connNum,-1)
-	println(b.connNum)
 }
 
 // proxy client connection
 func (p *Proxy) proxyConn(conn *net.TCPConn) {
-	p.connMutex.Lock()
-	if len(p.backends) < 1 {
-		log.Printf("ERR no backends, closing source connection: %v", conn)
-		return
-	}
-	// Select backend in random maner
-	back := p.backends[rand.Intn(len(p.backends))]
-	p.connMutex.Unlock()
-	p.confMutex.Lock()
-	closeConns := back.closeConns
-	destAddr := back.destAddr
-	p.confMutex.Unlock()
-	back.incConn()
-	defer back.decConn()
+	log.Printf("INFO start source connection: %v", conn)
 	defer func() {
 		log.Printf("closing source connection: %v", conn)
 		conn.Close()
 	}()
 	defer conn.Close()
-
-	if destAddr == nil {
+	p.connMutex.Lock()
+	back := p.GetBackend()
+	p.connMutex.Unlock()
+	if back == nil {
+		log.Printf("ERR no backends, closing source connection: %v", conn)
 		return
 	}
+	p.confMutex.Lock()
+	closeConns := back.closeConns
+	destAddr := back.destAddr
+	p.confMutex.Unlock()
+	if destAddr == nil {
+		log.Printf("ERR bad destAddr, closing source connection: %v", conn)
+		return
+	}
+	back.incConn()
+	defer back.decConn()
 
 	var d net.Dialer
 	d.Cancel = closeConns
 	destConnInterface, err := d.Dial("tcp", destAddr.String())
 	if err != nil {
+		log.Printf("ERR destAddr dial, closing source connection: %v", conn)
 		conn.Close()
 		return
 	}
